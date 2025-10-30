@@ -40,8 +40,11 @@ queue<unsigned_int> free_disk_blocks; //keeps track of the free disk blocks
 queue<clock_entry_t> clock_queue; //queue for the clock algorithm
 
 //to keep track of total sizes we make in init
-unsigned int NUM_PHYS_PAGE; 
-unsigned int NUM_DISK_BLOCKS;
+const unsigned int NUM_PHYS_PAGE; 
+const unsigned int NUM_DISK_BLOCKS;
+
+//other constants
+const unsigned int PAGE_SIZE = VM_ARENA_SIZE / VM_PAGESIZE;
 
 
 /*
@@ -123,7 +126,7 @@ void vm_create(pid_t pid) {
     //set read and write bits to 0 for each pte
     // set the virtual page entry fields so page is invalid
     // ASK JEANNIE: DO WE NEED TO DO ALL OF THIS IN CREATE OR SHOULD WE DEFER THIS TO EXTEND
-    for(int i = 0; i < (VM_ARENA_SIZE/VM_PAGESIZE); i++) {
+    for(int i = 0; i < PAGE_SIZE ; i++) {
         new_process->page_table->ptes[i].read_enable = 0;
         new_process->page_table->ptes[i].write_enable = 0;
 
@@ -158,5 +161,25 @@ void * vm_extend() {
     - return the virtual address (HOW DO YOU CALCULATE THAT)
     */
 
+    //virtual page offset 
+    int i = 0;
     
+    //go through the current progess virtual page array and find first virtual page where valid = false
+    while(current_process->vpages[i].valid == true) {
+        i++;
+    }
+    //now we know which page is not valid
+
+    //check to see if there is space to allocate a disk block 
+    if(free_disk_blocks.empty()) {
+        return null;
+    }
+
+    //assign disk to the current page and mark the page as valid
+    current_process->vpages[i].disk_block = free_disk_blocks.front();
+    free_disk_blocks.pop();
+    current_process->vpages[i].valid = true;
+
+    //ASK JEANNIE: HOW TO RETURN THE VIRTUAL ADDRESS 
+    return    
 }
