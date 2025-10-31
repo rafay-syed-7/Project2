@@ -6,9 +6,12 @@
 #include <fstream>
 #include <algorithm>
 #include "vm_pager.h"
+#include <queue>
+#include <cstring>
 
 using namespace std;
 
+//failing extend, read s
 //virtual page struct
 struct vpage_t {
     int disk_block;
@@ -45,7 +48,7 @@ unsigned int NUM_PHYS_PAGE;
 unsigned int NUM_DISK_BLOCKS;
 
 //other constants
-const unsigned int NUM_VPAGES = VM_ARENA_SIZE / VM_PAGESIZE;
+unsigned int NUM_VPAGES = VM_ARENA_SIZE / VM_PAGESIZE;
 
 
 /*
@@ -75,11 +78,11 @@ void vm_init(unsigned int memory_pages, unsigned int disk_blocks) {
 
     //empty physical page queue just in case
     while(!free_phys_pages.empty()) {
-        free_phys_page.pop();
+        free_phys_pages.pop();
     }
 
     //fill free physical page queue
-    for(int i = 0; i < NUM_PHYS_PAGE; i++) {
+    for(unsigned int i = 0; i < NUM_PHYS_PAGE; i++) {
         free_phys_pages.push(i);
     }
 
@@ -89,7 +92,7 @@ void vm_init(unsigned int memory_pages, unsigned int disk_blocks) {
     }
 
     //fill disk blocks 
-    for(int i = 0; i < NUM_DISK_BLOCKS; i++) {
+    for(unsigned int i = 0; i < NUM_DISK_BLOCKS; i++) {
         free_disk_blocks.push(i);
     }
 
@@ -131,7 +134,7 @@ void vm_create(pid_t pid) {
     //set read and write bits to 0 for each pte
     // set the virtual page entry fields so page is invalid
     // ASK JEANNIE: DO WE NEED TO DO ALL OF THIS IN CREATE OR SHOULD WE DEFER THIS TO EXTEND
-    for(int i = 0; i < NUM_VPAGES ; i++) {
+    for (unsigned int i = 0; i < NUM_VPAGES ; i++) {
         new_process->page_table->ptes[i].read_enable = 0;
         new_process->page_table->ptes[i].write_enable = 0;
 
@@ -168,12 +171,12 @@ void * vm_extend() {
 
     //check to see if there is space to allocate a disk block 
     if(free_disk_blocks.empty()) {
-        return nullptr;
+        return NULL;
     }
 
     //check to see if the arena is full
     if(current_process->vpages.size() >= NUM_VPAGES) {
-        return nullptr;
+        return NULL; 
     }
 
     //create a new virtual page and do the assignments and mark as valid 
@@ -196,10 +199,21 @@ void * vm_extend() {
     // pte.read_enable = 0;
     // pte.write_enable = 0;
 
-    void* addr = (void*)(VM_ARENA_BASEADDR + ((current_process->vpages.size() -1) * VM_PAGESIZE));
+    void* addr = (void*)((uintptr_t) VM_ARENA_BASEADDR + ((current_process->vpages.size() -1) * VM_PAGESIZE));
     return addr;
 }
 
+/*
+ * vm_switch
+ *
+ * Called when the kernel is switching to a new process, with process
+ * identifier "pid".  This allows the pager to do any bookkeeping needed to
+ * register the new process.
+ */
+void vm_switch(pid_t pid) {
+    current_process = process_table[pid];
+    page_table_base_register = current_process->page_table;
+}
 
 /*
  * vm_destroy
@@ -208,7 +222,61 @@ void * vm_extend() {
  * held by the current process (page table, physical pages, disk blocks, etc.)
  */
 void vm_destroy() {
+    // return 0;
+}
 
+//runs clock algorithm 
+int clock_algo() {
+    clock_entry_t tempClock = clock_queue.front();
+    clock_queue.pop();
+    
+    //have the correct process now 
+    process_t *victim = process_table[tempClock.pid];
+    unsigned int vpn = tempClock.vpn;
+
+    while(victim->vpages[vpn].referenced) {
+        victim->vpages[vpn].referenced = false;
+        victim->page_table->ptes[vpn].read_enable = 0;
+        victim->page_table->ptes[vpn].write_enable = 0;
+
+        //push back to the end of the queue 
+        clock_queue.push(tempClock);
+
+        //move clock hand
+        tempClock = clock_queue.front();
+        clock_queue.pop();
+        victim = process_table[tempClock.pid];
+        vpn = tempClock.vpn;
+    }
+    
+    //now found page where referenced == 0
+   
+    //if dirty is 1 write to disk
+    if(victim->vpages[vpn].dirty == 1) {
+        disk_write(victim->vpages[vpn].disk_block, victim->vpages[vpn].ppage);
+        victim->vpages[vpn].dirty = false;
+    }
+    int freed_page = victim->vpages[vpn].ppage;
+    victim->vpages[vpn].ppage = -1;
+    victim->page_table->ptes[vpn].read_enable = 0;
+    victim->page_table->ptes[vpn].write_enable = 0;
+    return freed_page;
+}
+
+
+// //helper to see if vpn has a valid mapping to a physical page
+int inPhysicalMem(vpage_t &current_page, unsigned int vpn, bool write_flag) {
+    if(current_page.ppage != -1) {
+        current_process->page_table->ptes[vpn].read_enable = 1;
+        current_page.referenced = true; //since resident and attempted to be accessed, it is referenced
+        //later with clock, if its write flag or if its dirty because when second eviction dirty bit remains
+        if(write_flag) {
+            current_process->page_table->ptes[vpn].write_enable = 1;
+            current_page.dirty = true; //write fault, so need to set dirty to 1
+        }
+        return 1; //sucess, just needed to reset the bits
+    }
+    return 0; //failure, problem was not about resetting the r/w bits
 }
 
 /*
@@ -218,17 +286,101 @@ void vm_destroy() {
  * is true if the access that caused the fault is a write.
  * Should return 0 on success, -1 on failure.
  */
+
+// Couple conditions: Extend, Read; Extend, Write; 
+// Page needs to be Zeroed on a Read
+
 int vm_fault(void *addr, bool write_flag) {
     
     // calculate the current virtual page number we are on from the addr passed into function
     uintptr_t addr_int = (uintptr_t) addr;
-    unsigned int vpn = addr_int / VM_PAGESIZE;
+    unsigned int vpn = (addr_int - (uintptr_t)VM_ARENA_BASEADDR) / VM_PAGESIZE;
+
+    //TO DO: CHECK IF PAGE IS IN ARENA
     
     // check if current page is valid, if not something went wrong
     if (!current_process->vpages[vpn].valid) {
         return -1; // invalid access — not extended yet
     }
 
+    //checks to see if page is resident, if so update permission 
+    vpage_t &current_page = current_process->vpages[vpn];
+    if(inPhysicalMem(current_page, vpn, write_flag)) {
+        return 0;
+    }
+
+    // if physical space is free just allocate from queue and do the necessary assignments
+    int ppage; 
+    if(!free_phys_pages.empty()) {
+       ppage = free_phys_pages.front();
+       free_phys_pages.pop();
+    }
+    else {
+        ppage = clock_algo();
+    }
+
+    //bring data into memory -- check zero logic 
+
+    //should I fill this page with zeros again? Do either with first fault or either when you read to it
+    if(current_page.isZeroed) {
+        memset((char *)pm_physmem + (ppage * VM_PAGESIZE), 0, VM_PAGESIZE);
+    }
+    else {
+        disk_read(current_page.disk_block, ppage);
+    }
+
+    //update metadata and page table
+    current_page.ppage = ppage;
+    current_page.referenced = true;
+    current_page.dirty = write_flag;
+
+    current_process->page_table->ptes[vpn].ppage = ppage;
+    current_process->page_table->ptes[vpn].read_enable = 1;
+    if(write_flag) {
+        current_process->page_table->ptes[vpn].write_enable = 1;
+        current_page.isZeroed = false;
+    }
+    // else {
+    //     current_process->page_table->ptes[vpn].write_enable = 0;
+    // }
+    // ^ if you read to a page you already written to does not mean you need to reset write bit 
+
+    //add to the clock queue
+    clock_entry_t new_entry = { current_process->pid, vpn};
+    clock_queue.push(new_entry);
+    return 0; 
 }
 
+/*
+ * vm_syslog
+ *
+ * A request by current process to log a message that is stored in the process'
+ * arena at address "message" and is of length "len".
+ *
+ * Should return 0 on success, -1 on failure.
+ */
+int vm_syslog(void *message, unsigned int len) {
+    return 0;
+}
+
+
+// int notPmm_freeSpace(struct vpage *current_page, unsigned int vpn) {
+//     current_page->ppage = free_phys_pages.front();
+//     free_phys_pages.pop();
+
+//     disk_read(current_page->disk_block, current_page->ppage);
+
+//     current_page->referenced = 1;
+//     current_page->valid = true;
+
+//     //TO DO: ASK IF YOU NEED TO SET THE R/W PERMISSIONS 
+//     current_process->pte[vpn].read_enable = 1;
+
+//     //if attempted to write to the page
+//     if(write_flag) {
+//         current_process->pte[vpn].write_enable = 1;
+//         current_page->dirty = 1;
+//     }
+//     return 1;
+// }
 
