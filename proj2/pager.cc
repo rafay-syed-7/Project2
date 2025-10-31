@@ -23,28 +23,29 @@ struct vpage_t {
 struct process_t {
     pid_t pid;
     page_table_t *page_table;
-    vpage_t vpages[VM_ARENA_SIZE / VM_PAGESIZE]; 
+    vector<vpage_t> vpages; 
 };
 
+// ASK JEANNIE TOMORROW AT OFFICE HOURS
 //struct for the clock algorithm -- need to check
 struct clock_entry_t {
     pid_t pid;
     unsigned int vpn; //specific virtual page to evict -- need to find out how to calc. ASK JEANNIE
-}
+};
 
 //GLOBAL structures
 unordered_map<pid_t, process_t*> process_table; //map for id to process
-process_t *current_process = nullptr //tracks current process
-queue<unsigned_int> free_phys_pages; //keeps track of the free physical pages
-queue<unsigned_int> free_disk_blocks; //keeps track of the free disk blocks
+process_t *current_process = nullptr; //tracks current process
+queue<unsigned int> free_phys_pages; //keeps track of the free physical pages
+queue<unsigned int> free_disk_blocks; //keeps track of the free disk blocks
 queue<clock_entry_t> clock_queue; //queue for the clock algorithm
 
 //to keep track of total sizes we make in init
-const unsigned int NUM_PHYS_PAGE; 
-const unsigned int NUM_DISK_BLOCKS;
+unsigned int NUM_PHYS_PAGE; 
+unsigned int NUM_DISK_BLOCKS;
 
 //other constants
-const unsigned int PAGE_SIZE = VM_ARENA_SIZE / VM_PAGESIZE;
+const unsigned int NUM_VPAGES = VM_ARENA_SIZE / VM_PAGESIZE;
 
 
 /*
@@ -123,19 +124,23 @@ void vm_create(pid_t pid) {
     new_process->pid = pid;
     new_process->page_table = new page_table_t;
 
+    //extra
+    new_process->vpages.clear();
+    new_process->vpages.reserve(NUM_VPAGES);
+
     //set read and write bits to 0 for each pte
     // set the virtual page entry fields so page is invalid
     // ASK JEANNIE: DO WE NEED TO DO ALL OF THIS IN CREATE OR SHOULD WE DEFER THIS TO EXTEND
-    for(int i = 0; i < PAGE_SIZE ; i++) {
+    for(int i = 0; i < NUM_VPAGES ; i++) {
         new_process->page_table->ptes[i].read_enable = 0;
         new_process->page_table->ptes[i].write_enable = 0;
 
-        new_process->vpages[i].disk_block = -1; //-1 because not in disk yet 
-        new_process->vpages[i].ppage = -1; //-1 because not in physical mem yet
-        new_process->vpages[i].valid = false;
-        new_process->vpages[i].referenced = false;
-        new_process->vpages[i].dirty = false;
-        new_process->vpages[i].isZeroed = true;
+        // new_process->vpages[i].disk_block = -1; //-1 because not in disk yet 
+        // new_process->vpages[i].ppage = -1; //-1 because not in physical mem yet
+        // new_process->vpages[i].valid = false;
+        // new_process->vpages[i].referenced = false;
+        // new_process->vpages[i].dirty = false;
+        // new_process->vpages[i].isZeroed = true;
     }
 
     //add to map 
@@ -161,25 +166,69 @@ void * vm_extend() {
     - return the virtual address (HOW DO YOU CALCULATE THAT)
     */
 
-    //virtual page offset 
-    int i = 0;
-    
-    //go through the current progess virtual page array and find first virtual page where valid = false
-    while(current_process->vpages[i].valid == true) {
-        i++;
-    }
-    //now we know which page is not valid
-
     //check to see if there is space to allocate a disk block 
     if(free_disk_blocks.empty()) {
-        return null;
+        return nullptr;
     }
 
-    //assign disk to the current page and mark the page as valid
-    current_process->vpages[i].disk_block = free_disk_blocks.front();
-    free_disk_blocks.pop();
-    current_process->vpages[i].valid = true;
+    //check to see if the arena is full
+    if(current_process->vpages.size() >= NUM_VPAGES) {
+        return nullptr;
+    }
 
-    //ASK JEANNIE: HOW TO RETURN THE VIRTUAL ADDRESS 
-    return    
+    //create a new virtual page and do the assignments and mark as valid 
+    vpage_t new_page;
+    new_page.disk_block = free_disk_blocks.front();
+    free_disk_blocks.pop();
+
+    //set all the values in the new vpage
+    new_page.ppage = -1;
+    new_page.valid = true;
+    new_page.referenced = false;
+    new_page.dirty = false;
+    new_page.isZeroed = true;
+    
+    //add new page to current proces
+    current_process->vpages.push_back(new_page);
+
+    // setting read and write to 0 just in case so we know this will trigger a fault
+    // page_table_entry_t &pte = current_process->page_table->ptes[i];
+    // pte.read_enable = 0;
+    // pte.write_enable = 0;
+
+    void* addr = (void*)(VM_ARENA_BASEADDR + ((current_process->vpages.size() -1) * VM_PAGESIZE));
+    return addr;
 }
+
+
+/*
+ * vm_destroy
+ *
+ * Called when current process exits.  It should deallocate all resources
+ * held by the current process (page table, physical pages, disk blocks, etc.)
+ */
+void vm_destroy() {
+
+}
+
+/*
+ * vm_fault
+ *
+ * Called when current process has a fault at virtual address addr.  write_flag
+ * is true if the access that caused the fault is a write.
+ * Should return 0 on success, -1 on failure.
+ */
+int vm_fault(void *addr, bool write_flag) {
+    
+    // calculate the current virtual page number we are on from the addr passed into function
+    uintptr_t addr_int = (uintptr_t) addr;
+    unsigned int vpn = addr_int / VM_PAGESIZE;
+    
+    // check if current page is valid, if not something went wrong
+    if (!current_process->vpages[vpn].valid) {
+        return -1; // invalid access — not extended yet
+    }
+
+}
+
+
