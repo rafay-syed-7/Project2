@@ -11,7 +11,6 @@
 
 using namespace std;
 
-//failing extend, read s
 //virtual page struct
 struct vpage_t {
     int disk_block;
@@ -221,8 +220,53 @@ void vm_switch(pid_t pid) {
  * Called when current process exits.  It should deallocate all resources
  * held by the current process (page table, physical pages, disk blocks, etc.)
  */
+
+ /*
+    1) Go through the current_process and loop through every virtual page
+    2) For the virtual pages that are valid, clean up those resources
+    2a) If has ppage, we free it 
+    2b) Free disk_block
+    2c) Reset virtual page bits (referenced, dirty, etc..)
+    3) remove the process from the global map
+    4) Free the process struct
+ */
 void vm_destroy() {
-    // return 0;
+    for (unsigned int i = 0; i < current_process->vpages.size(); i++) {
+        if(current_process->vpages[i].valid == true) {
+            if(current_process->vpages[i].ppage != -1) {
+                free_phys_pages.push(current_process->vpages[i].ppage);
+                current_process->vpages[i].ppage = -1;
+            }
+
+            //free disk block
+            if(current_process->vpages[i].disk_block != -1) {
+                free_disk_blocks.push(current_process->vpages[i].disk_block);
+                current_process->vpages[i].disk_block = -1;
+            }
+
+            //reset virtual page bits
+            current_process->vpages[i].dirty = false;
+            current_process->vpages[i].referenced = false;
+            current_process->vpages[i].valid = false;
+            current_process->vpages[i].isZeroed = false;
+
+            //set read and write permissions to 0
+            if(current_process->page_table != nullptr) {
+                current_process->page_table->ptes[i].read_enable = 0;
+                current_process->page_table->ptes[i].write_enable = 0;
+            }
+            
+        }
+    }
+
+    //remove the process from the global map
+    process_table.erase(current_process->pid);
+
+    //free the process struct 
+    delete current_process->page_table;
+    current_process->page_table = nullptr;
+    delete current_process;
+    current_process = nullptr;
 }
 
 //runs clock algorithm 
@@ -249,14 +293,18 @@ int clock_algo() {
         vpn = tempClock.vpn;
     }
     
-    //now found page where referenced == 0
+    //now found page where referenced == 0 and the page is what we are evicting 
    
     //if dirty is 1 write to disk
     if(victim->vpages[vpn].dirty == 1) {
+        // Write to this disk block, empty out this physical page
         disk_write(victim->vpages[vpn].disk_block, victim->vpages[vpn].ppage);
         victim->vpages[vpn].dirty = false;
     }
+    
     int freed_page = victim->vpages[vpn].ppage;
+
+    //reset meta data for evicted page 
     victim->vpages[vpn].ppage = -1;
     victim->page_table->ptes[vpn].read_enable = 0;
     victim->page_table->ptes[vpn].write_enable = 0;
@@ -266,7 +314,7 @@ int clock_algo() {
 
 // //helper to see if vpn has a valid mapping to a physical page
 int inPhysicalMem(vpage_t &current_page, unsigned int vpn, bool write_flag) {
-    if(current_page.ppage != -1) {
+    if(current_page.ppage != -1) { // if IN Physical memory then:
         current_process->page_table->ptes[vpn].read_enable = 1;
         current_page.referenced = true; //since resident and attempted to be accessed, it is referenced
         //later with clock, if its write flag or if its dirty because when second eviction dirty bit remains
@@ -274,21 +322,29 @@ int inPhysicalMem(vpage_t &current_page, unsigned int vpn, bool write_flag) {
             current_process->page_table->ptes[vpn].write_enable = 1;
             current_page.dirty = true; //write fault, so need to set dirty to 1
         }
-        return 1; //sucess, just needed to reset the bits
+        return 1; //success, just needed to reset the bits
     }
-    return 0; //failure, problem was not about resetting the r/w bits
+    return 0; //failure, problem was not about resetting the r/w bits and wasn't resident 
 }
 
-/*
- * vm_fault
- *
- * Called when current process has a fault at virtual address addr.  write_flag
- * is true if the access that caused the fault is a write.
- * Should return 0 on success, -1 on failure.
- */
 
-// Couple conditions: Extend, Read; Extend, Write; 
-// Page needs to be Zeroed on a Read
+
+/* Scenarios being accounted for by our code for vm_fault
+
+1) checks if current page is valid
+2) checks if page is resident, updates permissions if so and returns
+
+3) if not, check to see if physical memory free
+3a) if so, allocate physical memory for this virtual page
+3b) if not, run clock to evict and to get a newly freed physical page
+
+4a) if the page isZeroed, fill it with 0s
+4b) if not read in the contents from disk
+
+5) update metadata and page table
+6) add this virtual page to the clock queue
+
+*/ 
 
 int vm_fault(void *addr, bool write_flag) {
     
@@ -306,7 +362,7 @@ int vm_fault(void *addr, bool write_flag) {
     //checks to see if page is resident, if so update permission 
     vpage_t &current_page = current_process->vpages[vpn];
     if(inPhysicalMem(current_page, vpn, write_flag)) {
-        return 0;
+        return 0; 
     }
 
     // if physical space is free just allocate from queue and do the necessary assignments
@@ -315,13 +371,10 @@ int vm_fault(void *addr, bool write_flag) {
        ppage = free_phys_pages.front();
        free_phys_pages.pop();
     }
-    else {
+    else { //physical page is not free, run clock algorithm 
         ppage = clock_algo();
     }
 
-    //bring data into memory -- check zero logic 
-
-    //should I fill this page with zeros again? Do either with first fault or either when you read to it
     if(current_page.isZeroed) {
         memset((char *)pm_physmem + (ppage * VM_PAGESIZE), 0, VM_PAGESIZE);
     }
@@ -336,14 +389,11 @@ int vm_fault(void *addr, bool write_flag) {
 
     current_process->page_table->ptes[vpn].ppage = ppage;
     current_process->page_table->ptes[vpn].read_enable = 1;
+    
     if(write_flag) {
         current_process->page_table->ptes[vpn].write_enable = 1;
         current_page.isZeroed = false;
     }
-    // else {
-    //     current_process->page_table->ptes[vpn].write_enable = 0;
-    // }
-    // ^ if you read to a page you already written to does not mean you need to reset write bit 
 
     //add to the clock queue
     clock_entry_t new_entry = { current_process->pid, vpn};
@@ -359,7 +409,69 @@ int vm_fault(void *addr, bool write_flag) {
  *
  * Should return 0 on success, -1 on failure.
  */
+
+ /*
+ STEPS for syslog
+ 1) Check if memory is valid
+ 2) handle missing pages
+     - if part of the message is stored on disk or uninitialized page, need to bring into physical memory
+ 3) Read data from memory
+ 4) print to console 
+ */
 int vm_syslog(void *message, unsigned int len) {
+    // need to kick out if length = 0 or address is out of arena
+    if (len == 0) {
+        return -1;
+    }
+
+    // check if memory is valid 
+    uintptr_t start_address = (uintptr_t) message;
+    uintptr_t end_address = start_address + len - 1; 
+    
+    //check if start and end address is within arena size
+    if (start_address < (uintptr_t) VM_ARENA_BASEADDR || end_address > (uintptr_t) VM_ARENA_BASEADDR + (uintptr_t) VM_ARENA_SIZE) {
+        return -1;
+    }
+
+    // check if memory within the start and end address is valid
+    string s;
+    unsigned int vpn; 
+    int ppage;
+    char* byte;
+    int offset;
+    for (uintptr_t addr = start_address; addr < end_address + 1; addr++) {
+        // 1) Check address is valid 
+
+        //find vpn 
+        vpn = (addr - (uintptr_t) VM_ARENA_BASEADDR) / (uintptr_t) VM_PAGESIZE;
+        
+        // if specific page has not been extended, we return error
+        if(current_process->vpages[vpn].valid == false) {
+            return -1;
+        }
+
+        // if the page is not resident
+        if(current_process->vpages[vpn].ppage == -1) {
+            // run vm_fault to make the page resident. If it fails, kick out of function
+            if(vm_fault((void*) addr, false) != 0) {
+                return -1;
+            }
+        }
+
+        // at this point, this virtual page is resident
+        // MAYBE: check if the read bit is 0 or not
+        
+        // 2) translate to physical address
+        ppage = current_process->vpages[vpn].ppage;
+
+        offset = (addr - (uintptr_t) VM_ARENA_BASEADDR) % (uintptr_t) VM_PAGESIZE; //left over bytes in the current page
+        byte = ((char *)pm_physmem)+ (ppage * VM_PAGESIZE) + offset;
+        
+        // 3) append string 
+        s += *byte;
+    }
+    
+    cout << "syslog \t\t\t" << s << endl;
     return 0;
 }
 
