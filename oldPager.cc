@@ -34,6 +34,7 @@ struct vpage_t {
     bool referenced;
     bool dirty;
     bool isZeroed;
+    process_t* parent_process;
 };
 
 //processs struct
@@ -204,6 +205,7 @@ void * vm_extend() {
     new_page.referenced = false;
     new_page.dirty = false;
     new_page.isZeroed = true;
+    new_page.parent_process = current_process;
     
     //add new page to current proces
     current_process->vpages.push_back(new_page);
@@ -284,44 +286,24 @@ void vm_destroy() {
     current_process = nullptr;
 }
 
-/*
-
-Problem:
-    We are calling the clock algorithm to return a freed up physical page to vm_fault BUT
-    maybe the page we evict that was in the clock queue was not from the current process
-
-Solution:
-    We keep track of which process is responsible for every page. So when we are looking at pages to evict,
-    IF the page to be evicted is not from the current process (so parent_process != current_process) then
-    we need to find another page
-*/
-
 //runs clock algorithm 
 int clock_algo() {
     clock_entry_t tempClock = clock_queue.front();
     clock_queue.pop();
     
-    //have the process now  and vpn 
+    //have the correct process now 
     process_t *victim = process_table[tempClock.pid];
     unsigned int vpn = tempClock.vpn;
 
-    while(1) {
-        if(!victim->vpages[vpn].referenced && victim == current_process) {
-            break;
-        }
+    while(victim->vpages[vpn].referenced) {
+        //are we gettign to the right page table?
+        victim->vpages[vpn].referenced = false;
+        victim->page_table->ptes[vpn].read_enable = 0;
+        victim->page_table->ptes[vpn].write_enable = 0;
 
-        //if virtual page is not equal to the current process we don't want to reset the permissions and push back onto the queue
-        if(victim != current_process) {
-            clock_queue.push(tempClock);
-        }
-        //if virtual page is set to the current process we want to reset its permissions
-        else {
-            victim->vpages[vpn].referenced = false;
-            victim->page_table->ptes[vpn].read_enable = 0;
-            victim->page_table->ptes[vpn].write_enable = 0;
-            clock_queue.push(tempClock);
-        }
-        
+        //push back to the end of the queue 
+        clock_queue.push(tempClock);
+
         //move clock hand
         tempClock = clock_queue.front();
         clock_queue.pop();
@@ -329,8 +311,9 @@ int clock_algo() {
         vpn = tempClock.vpn;
     }
     
-    //now found page where referenced == 0 and the page is what we are evicting
+    //now found page where referenced == 0 and the page is what we are evicting 
 
+    //
     //if dirty is 1 write to disk
     if(victim->vpages[vpn].dirty == 1) {
         // Write to this disk block, empty out this physical page
@@ -390,17 +373,7 @@ int vm_fault(void *addr, bool write_flag) {
     uintptr_t addr_int = (uintptr_t) addr;
     unsigned int vpn = (addr_int - (uintptr_t)VM_ARENA_BASEADDR) / VM_PAGESIZE;
     
-    /*
-    2 checks
-        1) its not in the arena
-        2) its not valid
-    */
-
-    //check if address is in the arena
-    if ((uintptr_t) addr < (uintptr_t) VM_ARENA_BASEADDR || (uintptr_t) addr > (uintptr_t) VM_ARENA_BASEADDR + (uintptr_t) VM_ARENA_SIZE) {
-        return -1;
-    }
-    // check if current page is valid, if not something went wrong
+    // check if current page is valid, if not something went wrong, also check that it is in arena
     if (!current_process->vpages[vpn].valid) {
         return -1; // invalid access — not extended yet
     }
@@ -520,25 +493,3 @@ int vm_syslog(void *message, unsigned int len) {
     cout << "syslog \t\t\t" << s << endl;
     return 0;
 }
-
-
-// int notPmm_freeSpace(struct vpage *current_page, unsigned int vpn) {
-//     current_page->ppage = free_phys_pages.front();
-//     free_phys_pages.pop();
-
-//     disk_read(current_page->disk_block, current_page->ppage);
-
-//     current_page->referenced = 1;
-//     current_page->valid = true;
-
-//     //TO DO: ASK IF YOU NEED TO SET THE R/W PERMISSIONS 
-//     current_process->pte[vpn].read_enable = 1;
-
-//     //if attempted to write to the page
-//     if(write_flag) {
-//         current_process->pte[vpn].write_enable = 1;
-//         current_page->dirty = 1;
-//     }
-//     return 1;
-// }
-
