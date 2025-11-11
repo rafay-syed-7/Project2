@@ -185,12 +185,12 @@ void * vm_extend() {
 
     //check to see if there is space to allocate a disk block 
     if(free_disk_blocks.empty()) {
-        return nullptr;
+        return NULL;
     }
 
     //check to see if the arena is full
     if(current_process->vpages.size() >= NUM_VPAGES) {
-        return nullptr; 
+        return NULL; 
     }
 
     //create a new virtual page and do the assignments and mark as valid 
