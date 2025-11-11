@@ -23,7 +23,8 @@ using namespace std;
     //not refferenced dirty page that is a read fault that was previosuly dirty that should be read and write 
 
 //vpage struct keep a pointer to the process that owns it so when you get into clock you can refer to it directly 
-struct process_t;
+
+
 
 //virtual page struct
 struct vpage_t {
@@ -33,7 +34,6 @@ struct vpage_t {
     bool referenced;
     bool dirty;
     bool isZeroed;
-    process_t *parent_process; 
 };
 
 //processs struct
@@ -43,19 +43,19 @@ struct process_t {
     vector<vpage_t> vpages; 
 };
 
-// // ASK JEANNIE TOMORROW AT OFFICE HOURS
-// //struct for the clock algorithm -- need to check
-// struct clock_entry_t {
-//     pid_t pid;
-//     unsigned int vpn; //specific virtual page to evict -- need to find out how to calc. ASK JEANNIE
-// };
+// ASK JEANNIE TOMORROW AT OFFICE HOURS
+//struct for the clock algorithm -- need to check
+struct clock_entry_t {
+    pid_t pid;
+    unsigned int vpn; //specific virtual page to evict -- need to find out how to calc. ASK JEANNIE
+};
 
 //GLOBAL structures
 unordered_map<pid_t, process_t*> process_table; //map for id to process
 process_t *current_process = nullptr; //tracks current process
 queue<unsigned int> free_phys_pages; //keeps track of the free physical pages
 queue<unsigned int> free_disk_blocks; //keeps track of the free disk blocks
-queue<vpage_t*> clock_queue; //queue for the clock algorithm
+queue<clock_entry_t> clock_queue; //queue for the clock algorithm
 
 //to keep track of total sizes we make in init
 unsigned int NUM_PHYS_PAGE; 
@@ -185,12 +185,12 @@ void * vm_extend() {
 
     //check to see if there is space to allocate a disk block 
     if(free_disk_blocks.empty()) {
-        return nullptr;
+        return NULL;
     }
 
     //check to see if the arena is full
     if(current_process->vpages.size() >= NUM_VPAGES) {
-        return nullptr; 
+        return NULL; 
     }
 
     //create a new virtual page and do the assignments and mark as valid 
@@ -204,7 +204,7 @@ void * vm_extend() {
     new_page.referenced = false;
     new_page.dirty = false;
     new_page.isZeroed = true;
-    new_page.parent_process = current_process; 
+    
     //add new page to current proces
     current_process->vpages.push_back(new_page);
 
@@ -298,45 +298,53 @@ Solution:
 
 //runs clock algorithm 
 int clock_algo() {
-    vpage_t *victimPage = clock_queue.front();
+    clock_entry_t tempClock = clock_queue.front();
     clock_queue.pop();
     
-    while(victimPage->referenced) {
-        victimPage->referenced = false;
+    //have the process now  and vpn 
+    process_t *victim = process_table[tempClock.pid];
+    unsigned int vpn = tempClock.vpn;
 
-        //disable access in page table
-        process_t *tempProcess = victimPage->parent_process;
-        //find vpn by finding index of the vpage
-        int vpn = victimPage - &tempProcess->vpages[0];
+    while(1) {
+        //go to
+        // if(!victim->vpages[vpn].referenced && victim == current_process) {
+        //     break;
+        // }
+
+        //if virtual page is not equal to the current process we don't want to reset the permissions and push back onto the queue
+        if(victim != current_process) {
+            clock_queue.push(tempClock);
+        }
+        //if virtual page is set to the current process we want to reset its permissions
+        else {
+            victim->vpages[vpn].referenced = false;
+            victim->page_table->ptes[vpn].read_enable = 0;
+            victim->page_table->ptes[vpn].write_enable = 0;
+            clock_queue.push(tempClock);
+        }
         
-        tempProcess->page_table->ptes[vpn].read_enable = 0;
-        tempProcess->page_table->ptes[vpn].write_enable = 0;
-
-        //push back to the end of the queue 
-        clock_queue.push(victimPage);
-
         //move clock hand
-        victimPage = clock_queue.front();
+        tempClock = clock_queue.front();
         clock_queue.pop();
-    }
-
-    //now found page where referenced == 0 and the page is what we are evicting
-    process_t *victimProcess = victimPage->parent_process;
-    int vpn = victimPage - &victimProcess->vpages[0];
-
-    //if dirty is 1 write to disk
-    if(victimPage->dirty) {
-        // Write to this disk block, empty out this physical page
-        disk_write(victimPage->disk_block, victimPage->ppage);
-        victimPage->dirty = false;
+        victim = process_table[tempClock.pid];
+        vpn = tempClock.vpn;
     }
     
-    int freed_page = victimPage->ppage;
+    //now found page where referenced == 0 and the page is what we are evicting
 
-    //reset meta data for evicted page in physical memory
-    victimProcess->page_table->ptes[vpn].read_enable = 0;
-    victimProcess->page_table->ptes[vpn].write_enable = 0;
+    //if dirty is 1 write to disk
+    if(victim->vpages[vpn].dirty == 1) {
+        // Write to this disk block, empty out this physical page
+        disk_write(victim->vpages[vpn].disk_block, victim->vpages[vpn].ppage);
+        victim->vpages[vpn].dirty = false;
+    }
+    
+    int freed_page = victim->vpages[vpn].ppage;
 
+    //reset meta data for evicted page 
+    victim->vpages[vpn].ppage = -1;
+    victim->page_table->ptes[vpn].read_enable = 0;
+    victim->page_table->ptes[vpn].write_enable = 0;
     return freed_page;
 }
 
@@ -425,7 +433,6 @@ int vm_fault(void *addr, bool write_flag) {
     current_page.ppage = ppage;
     current_page.referenced = true;
     current_page.dirty = write_flag;
-    current_page.parent_process = current_process;
 
     current_process->page_table->ptes[vpn].ppage = ppage;
     current_process->page_table->ptes[vpn].read_enable = 1;
@@ -436,7 +443,8 @@ int vm_fault(void *addr, bool write_flag) {
     }
 
     //add to the clock queue
-    clock_queue.push(&current_process->vpages[vpn]);
+    clock_entry_t new_entry = { current_process->pid, vpn};
+    clock_queue.push(new_entry);
     return 0; 
 }
 
