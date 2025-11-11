@@ -23,8 +23,7 @@ using namespace std;
     //not refferenced dirty page that is a read fault that was previosuly dirty that should be read and write 
 
 //vpage struct keep a pointer to the process that owns it so when you get into clock you can refer to it directly 
-
-
+struct process_t;
 
 //virtual page struct
 struct vpage_t {
@@ -34,6 +33,7 @@ struct vpage_t {
     bool referenced;
     bool dirty;
     bool isZeroed;
+    process_t *parent_process; 
 };
 
 //processs struct
@@ -43,19 +43,19 @@ struct process_t {
     vector<vpage_t> vpages; 
 };
 
-// ASK JEANNIE TOMORROW AT OFFICE HOURS
-//struct for the clock algorithm -- need to check
-struct clock_entry_t {
-    pid_t pid;
-    unsigned int vpn; //specific virtual page to evict -- need to find out how to calc. ASK JEANNIE
-};
+// // ASK JEANNIE TOMORROW AT OFFICE HOURS
+// //struct for the clock algorithm -- need to check
+// struct clock_entry_t {
+//     pid_t pid;
+//     unsigned int vpn; //specific virtual page to evict -- need to find out how to calc. ASK JEANNIE
+// };
 
 //GLOBAL structures
 unordered_map<pid_t, process_t*> process_table; //map for id to process
 process_t *current_process = nullptr; //tracks current process
 queue<unsigned int> free_phys_pages; //keeps track of the free physical pages
 queue<unsigned int> free_disk_blocks; //keeps track of the free disk blocks
-queue<clock_entry_t> clock_queue; //queue for the clock algorithm
+queue<vpage_t*> clock_queue; //queue for the clock algorithm
 
 //to keep track of total sizes we make in init
 unsigned int NUM_PHYS_PAGE; 
@@ -204,7 +204,7 @@ void * vm_extend() {
     new_page.referenced = false;
     new_page.dirty = false;
     new_page.isZeroed = true;
-        
+    new_page.parent_process = current_process; 
     //add new page to current proces
     current_process->vpages.push_back(new_page);
 
@@ -264,26 +264,17 @@ void vm_destroy() {
             current_process->vpages[i].referenced = false;
             current_process->vpages[i].valid = false;
             current_process->vpages[i].isZeroed = false;
+            current_process->vpages[i].parent_process = nullptr;
 
             //set read and write permissions to 0
             if(current_process->page_table != nullptr) {
                 current_process->page_table->ptes[i].read_enable = 0;
                 current_process->page_table->ptes[i].write_enable = 0;
-            } 
+            }
+            
         }
     }
 
-    //remove from clock queue
-    clock_entry_t elementToRemove;
-    clock_queue.pop();
-    for(unsigned int i = 0; i < clock_queue.size(); i++) {
-        elementToRemove = clock_queue.front();
-        clock_queue.pop();
-        if(elementToRemove.pid != current_process->pid) {
-            clock_queue.push(elementToRemove);
-        }
-    }
-    
     //remove the process from the global map
     process_table.erase(current_process->pid);
 
@@ -294,46 +285,59 @@ void vm_destroy() {
     current_process = nullptr;
 }
 
+/*
+
+Problem:
+    We are calling the clock algorithm to return a freed up physical page to vm_fault BUT
+    maybe the page we evict that was in the clock queue was not from the current process
+
+Solution:
+    We keep track of which process is responsible for every page. So when we are looking at pages to evict,
+    IF the page to be evicted is not from the current process (so parent_process != current_process) then
+    we need to find another page
+*/
+
 //runs clock algorithm 
 int clock_algo() {
-    clock_entry_t tempClock = clock_queue.front();
+    vpage_t *victimPage = clock_queue.front();
     clock_queue.pop();
     
-    //look at a processs
-    process_t *victim = process_table[tempClock.pid];
-    unsigned int vpn = tempClock.vpn;
+    while(victimPage->referenced) {
+        victimPage->referenced = false;
 
-    while(victim->vpages[vpn].referenced) {
-        //are we gettign to the right page table?
-        victim->vpages[vpn].referenced = false;
-        victim->page_table->ptes[vpn].read_enable = 0;
-        victim->page_table->ptes[vpn].write_enable = 0;
+        process_t *tempProcess = victimPage->parent_process;
+        //find vpn by finding index of the vpage
+        int vpn = victimPage - &tempProcess->vpages[0];
+        
+        //disable access in page table 
+        tempProcess->page_table->ptes[vpn].read_enable = 0;
+        tempProcess->page_table->ptes[vpn].write_enable = 0;
 
         //push back to the end of the queue 
-        clock_queue.push(tempClock);
+        clock_queue.push(victimPage);
 
         //move clock hand
-        tempClock = clock_queue.front();
+        victimPage = clock_queue.front();
         clock_queue.pop();
-        victim = process_table[tempClock.pid];
-        vpn = tempClock.vpn;
     }
-    
-    //now found page where referenced == 0 and the page is what we are evicting 
+
+    //now found page where referenced == 0 and the page is what we are evicting
+    process_t *victimProcess = victimPage->parent_process;
+    int vpn = victimPage - &victimProcess->vpages[0];
 
     //if dirty is 1 write to disk
-    if(victim->vpages[vpn].dirty == 1) {
+    if(victimPage->dirty) {
         // Write to this disk block, empty out this physical page
-        disk_write(victim->vpages[vpn].disk_block, victim->vpages[vpn].ppage);
-        victim->vpages[vpn].dirty = false;
+        disk_write(victimPage->disk_block, victimPage->ppage);
+        victimPage->dirty = false;
     }
     
-    int freed_page = victim->vpages[vpn].ppage;
+    int freed_page = victimPage->ppage;
 
-    //reset meta data for evicted page 
-    victim->vpages[vpn].ppage = -1;
-    victim->page_table->ptes[vpn].read_enable = 0;
-    victim->page_table->ptes[vpn].write_enable = 0;
+    //reset meta data for evicted page in physical memory
+    victimProcess->page_table->ptes[vpn].read_enable = 0;
+    victimProcess->page_table->ptes[vpn].write_enable = 0;
+
     return freed_page;
 }
 
@@ -380,7 +384,14 @@ int vm_fault(void *addr, bool write_flag) {
     uintptr_t addr_int = (uintptr_t) addr;
     unsigned int vpn = (addr_int - (uintptr_t)VM_ARENA_BASEADDR) / VM_PAGESIZE;
     
+    /*
+    2 checks
+        1) its not in the arena
+        2) its not valid
+    */
+
     //check if address is in the arena
+    //added greater than or equal to to higher bound because the last valid byte is VM_ARENA_BASEADDR + VM_ARENA_SIZE - 1
     if ((uintptr_t) addr < (uintptr_t) VM_ARENA_BASEADDR || (uintptr_t) addr >= (uintptr_t) VM_ARENA_BASEADDR + (uintptr_t) VM_ARENA_SIZE) {
         return -1;
     }
@@ -415,21 +426,19 @@ int vm_fault(void *addr, bool write_flag) {
     //update metadata and page table
     current_page.ppage = ppage;
     current_page.referenced = true;
-    //can be causing problems, if its a write flag, if its already dirty you shouldn't unset it 
-    
+    current_page.dirty = write_flag;
+    current_page.parent_process = current_process;
 
     current_process->page_table->ptes[vpn].ppage = ppage;
     current_process->page_table->ptes[vpn].read_enable = 1;
     
-    if(write_flag || current_page.dirty) {
+    if(write_flag) {
         current_process->page_table->ptes[vpn].write_enable = 1;
         current_page.isZeroed = false;
-        current_page.dirty = true;
     }
 
     //add to the clock queue
-    clock_entry_t new_entry = { current_process->pid, vpn};
-    clock_queue.push(new_entry);
+    clock_queue.push(&current_process->vpages[vpn]);
     return 0; 
 }
 
@@ -506,3 +515,25 @@ int vm_syslog(void *message, unsigned int len) {
     cout << "syslog \t\t\t" << s << endl;
     return 0;
 }
+
+
+// int notPmm_freeSpace(struct vpage *current_page, unsigned int vpn) {
+//     current_page->ppage = free_phys_pages.front();
+//     free_phys_pages.pop();
+
+//     disk_read(current_page->disk_block, current_page->ppage);
+
+//     current_page->referenced = 1;
+//     current_page->valid = true;
+
+//     //TO DO: ASK IF YOU NEED TO SET THE R/W PERMISSIONS 
+//     current_process->pte[vpn].read_enable = 1;
+
+//     //if attempted to write to the page
+//     if(write_flag) {
+//         current_process->pte[vpn].write_enable = 1;
+//         current_page->dirty = 1;
+//     }
+//     return 1;
+// }
+

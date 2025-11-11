@@ -34,7 +34,6 @@ struct vpage_t {
     bool referenced;
     bool dirty;
     bool isZeroed;
-    process_t* parent_process;
 };
 
 //processs struct
@@ -205,8 +204,7 @@ void * vm_extend() {
     new_page.referenced = false;
     new_page.dirty = false;
     new_page.isZeroed = true;
-    new_page.parent_process = current_process;
-    
+        
     //add new page to current proces
     current_process->vpages.push_back(new_page);
 
@@ -373,7 +371,11 @@ int vm_fault(void *addr, bool write_flag) {
     uintptr_t addr_int = (uintptr_t) addr;
     unsigned int vpn = (addr_int - (uintptr_t)VM_ARENA_BASEADDR) / VM_PAGESIZE;
     
-    // check if current page is valid, if not something went wrong, also check that it is in arena
+    //check if address is in the arena
+    if ((uintptr_t) addr < (uintptr_t) VM_ARENA_BASEADDR || (uintptr_t) addr >= (uintptr_t) VM_ARENA_BASEADDR + (uintptr_t) VM_ARENA_SIZE) {
+        return -1;
+    }
+    // check if current page is valid, if not something went wrong
     if (!current_process->vpages[vpn].valid) {
         return -1; // invalid access — not extended yet
     }
