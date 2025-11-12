@@ -483,8 +483,8 @@ int vm_syslog(void *message, unsigned int len) {
         }
 
         // if the page is not resident
-        if(current_process->vpages[vpn].ppage == -1) {
-            // run vm_fault to make the page resident. If it fails, kick out of function
+        if(current_process->vpages[vpn].ppage == -1 || current_process->page_table->ptes[vpn].read_enable == 0) {
+            // run vm_fault to make the page resident and readable. If it fails, kick out of function
             if(vm_fault((void*) addr, false) != 0) {
                 return -1;
             }
