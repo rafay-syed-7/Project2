@@ -2,7 +2,7 @@ CXX=g++
 CFLAGS+=-Wall -Werror -g -std=c++11
 CXXFLAGS+=${CFLAGS}
 
-all: pager sample
+all: pager sample 
 
 pager: pager.cc libvm_pager.a
 	${CXX} ${CFLAGS} -o pager pager.cc libvm_pager.a -lcrypto

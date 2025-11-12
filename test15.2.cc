@@ -12,8 +12,8 @@ int main() {
     char *page2 = (char*) vm_extend();
 
     //fill with data
-    strcopy(page1, "blah1");
-    strcopy(page2, "beep2");
+    strcpy(page1, "blah1");
+    strcpy(page2, "beep2");
 
     //syslog across a page boundary - start near end of page and span into next -- tests cross page reads
     char *cross = page1 + VM_PAGESIZE - 3; //move pointer to 3 bytes before end of the page
@@ -27,7 +27,7 @@ int main() {
 
     //syslog on unmapped (outside the arena)
     char *invalid = page2 + VM_PAGESIZE + 1; //byte over 
-    vm_syslog(invalidPtr, 5); //should return error
+    vm_syslog(invalid, 5); //should return error
 
     //zero length syslog
     vm_syslog(page1, 0);

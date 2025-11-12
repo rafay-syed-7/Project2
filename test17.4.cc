@@ -3,7 +3,7 @@
 
 using namespace std;
 
-//does yield thousands of time -- stressing context switching
+//does yield thousands of time
 //makes sure theres no unnecessary faults
 
 int main() {
@@ -24,5 +24,5 @@ int main() {
         return 1;
     }
 
-    return 0
+    return 0;
 }

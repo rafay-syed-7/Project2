@@ -274,9 +274,12 @@ void vm_destroy() {
     }
 
     //remove from clock queue
+    unsigned int clock_queue_size = clock_queue.size();
     clock_entry_t elementToRemove;
-    clock_queue.pop();
-    for(unsigned int i = 0; i < clock_queue.size(); i++) {
+    if(!clock_queue.empty()) {
+        clock_queue.pop();
+    }
+    for(unsigned int i = 0; i < clock_queue_size; i++) {
         elementToRemove = clock_queue.front();
         clock_queue.pop();
         if(elementToRemove.pid != current_process->pid) {
@@ -322,7 +325,7 @@ int clock_algo() {
     //now found page where referenced == 0 and the page is what we are evicting 
 
     //if dirty is 1 write to disk
-    if(victim->vpages[vpn].dirty == 1) {
+    if(victim->vpages[vpn].dirty == true) {
         // Write to this disk block, empty out this physical page
         disk_write(victim->vpages[vpn].disk_block, victim->vpages[vpn].ppage);
         victim->vpages[vpn].dirty = false;
@@ -349,6 +352,7 @@ int inPhysicalMem(vpage_t &current_page, unsigned int vpn, bool write_flag) {
         if(write_flag || current_page.dirty == true) {
             current_process->page_table->ptes[vpn].write_enable = 1;
             current_page.dirty = true; //write fault, so need to set dirty to 1
+            current_page.isZeroed = false; 
         }
         return 1; //success, just needed to reset the bits
     }
@@ -381,6 +385,7 @@ int vm_fault(void *addr, bool write_flag) {
     unsigned int vpn = (addr_int - (uintptr_t)VM_ARENA_BASEADDR) / VM_PAGESIZE;
     
     //check if address is in the arena
+    //flag this, should it be greater than or equal to 
     if ((uintptr_t) addr < (uintptr_t) VM_ARENA_BASEADDR || (uintptr_t) addr >= (uintptr_t) VM_ARENA_BASEADDR + (uintptr_t) VM_ARENA_SIZE) {
         return -1;
     }

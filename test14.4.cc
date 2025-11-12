@@ -34,7 +34,7 @@ int main() {
 
     //read to trigger page ins and check there still zero
     bool allZero = true;
-    for (int i = 0; i < VIRTUAL_PAGES; i++) {
+    for (int i = 0; i < V_PAGES; i++) {
         if (pages[i][0] != '\0' || pages[i][100] != '\0') {
             cout << "ERROR - page " << i << endl;
             allZero = false;
@@ -42,7 +42,7 @@ int main() {
     }
 
     //should log no visible chars since its a zeroed page
-    for (int i = 0; i < VIRTUAL_PAGES; i++) {
+    for (int i = 0; i < V_PAGES i++) {
         vm_syslog(pages[i], 5);
     }
 
