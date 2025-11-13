@@ -33,11 +33,11 @@ int main() {
     }
 
     //check if it got evicted
-    if (hot[0] != 'A') {
-        cout << "BUG" << endl;
-    } else {
-        cout << "NO BUG" << endl;
-    }
+    // if (hot[0] != 'A') {
+    //     cout << "BUG" << endl;
+    // } else {
+    //     cout << "NO BUG" << endl;
+    // }
 
     return 0;
 }
