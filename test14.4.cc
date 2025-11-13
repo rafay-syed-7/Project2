@@ -17,12 +17,12 @@ int main() {
     char* pages[V_PAGES];
 
     //extend pages
-    for(int i = 0; i < V_PAGES) {
+    for(int i = 0; i < V_PAGES; i++) {
         pages[i] = (char *) vm_extend();
     }
 
     //trigger read fault
-    for(int i = 0; i < V_PAGES) {
+    for(int i = 0; i < V_PAGES; i++) {
         char val = pages[i][0]; //bring into memory
         (void) val; //stop compilier warnings
     }
@@ -42,7 +42,7 @@ int main() {
     }
 
     //should log no visible chars since its a zeroed page
-    for (int i = 0; i < V_PAGES i++) {
+    for (int i = 0; i < V_PAGES; i++) {
         vm_syslog(pages[i], 5);
     }
 

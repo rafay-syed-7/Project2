@@ -20,7 +20,6 @@ int main() {
 
     // After many yields, pages should still hold original values
     if (page1[0] != 'A' || page2[0] != 'B') {
-        cout << "didnt work" << endl;
         return 1;
     }
 
